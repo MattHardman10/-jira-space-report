@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install requests
+      - run: pip install requests matplotlib
       - run: python jira_space_report.py
         env:
           ATLASSIAN_EMAIL: ${{ secrets.ATLASSIAN_EMAIL }}
