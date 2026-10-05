@@ -22,7 +22,7 @@ import requests
 SITE = "https://restsuper.atlassian.net"
 EMAIL = os.environ.get("ATLASSIAN_EMAIL", "")
 TOKEN = os.environ.get("ATLASSIAN_API_TOKEN", "")
-PAGE_ID = os.environ.get("CONFLUENCE_PARENT_PAGE_ID", "")
+PAGE_ID = os.environ.get("CONFLUENCE_PARENT_PAGE_ID", "").strip()
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 INCLUDE_TEAM_MANAGED = False   # team-managed spaces are out of scope
 TOP_LEADS = 15                 # leads shown in the bar chart
@@ -262,7 +262,14 @@ def build_page(counts, spaces, attention):
 def update_page(body):
     url = f"{SITE}/wiki/api/v2/pages/{PAGE_ID}"
     r = requests.get(url, auth=AUTH, timeout=30)
-    r.raise_for_status()
+    if not r.ok:
+        me = requests.get(f"{SITE}/wiki/rest/api/user/current", auth=AUTH, timeout=30)
+        who = me.json() if me.ok else {}
+        print("DIAG status:", r.status_code)
+        print("DIAG page id length:", len(PAGE_ID), "| digits only:", PAGE_ID.isdigit())
+        print("DIAG Confluence sees you as:", who.get("type"), "|", who.get("displayName"))
+        print("DIAG response:", r.text[:300])
+        raise SystemExit("Could not read the Confluence page - see DIAG lines above")
     page = r.json()
     payload = {
         "id": PAGE_ID,
@@ -282,6 +289,7 @@ if __name__ == "__main__":
     if not (EMAIL and TOKEN and (PAGE_ID or DRY_RUN)):
         raise SystemExit("Missing ATLASSIAN_EMAIL, ATLASSIAN_API_TOKEN or CONFLUENCE_PARENT_PAGE_ID")
     projects = get_projects()
+    print(f"Jira returned {len(projects)} projects")
     counts, spaces, attention = classify(projects)
     body = build_page(counts, spaces, attention)
     if DRY_RUN:
