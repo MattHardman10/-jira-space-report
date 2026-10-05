@@ -17,11 +17,16 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import requests
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+from matplotlib.ticker import MaxNLocator
 
 # ---------- Settings ----------
 SITE = "https://restsuper.atlassian.net"
-EMAIL = os.environ.get("ATLASSIAN_EMAIL", "")
-TOKEN = os.environ.get("ATLASSIAN_API_TOKEN", "")
+EMAIL = os.environ.get("ATLASSIAN_EMAIL", "").strip()
+TOKEN = os.environ.get("ATLASSIAN_API_TOKEN", "").strip()
 PAGE_ID = os.environ.get("CONFLUENCE_PARENT_PAGE_ID", "").strip()
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 INCLUDE_TEAM_MANAGED = False   # team-managed spaces are out of scope
@@ -40,8 +45,12 @@ DIVISIONS = [
 TYPES = ["BAU", "Delivery", "Portfolio", "Standalone"]
 UNCATEGORISED = "Uncategorised"
 
-TYPE_COLOURS = "#0C66E4,#22A06B,#E2B203,#8F7EE7"
-DIVISION_COLOURS = "#0C66E4,#22A06B,#E2B203,#8F7EE7,#F87168,#2898BD,#B38600,#6E5DC6"
+TYPE_COLOURS = ["#0C66E4", "#22A06B", "#E2B203", "#8F7EE7"]          # BAU, Delivery, Portfolio, Standalone
+DIVISION_COLOURS = ["#1D7F8C", "#E56910", "#5E4DB2", "#4BCE97",
+                    "#AE2E24", "#2898BD", "#946F00", "#943D73"]
+TEXT, MUTED, GRID = "#172B4D", "#626F86", "#DCDFE4"
+ACTIVE_BLUE, INACTIVE_RED = "#0C66E4", "#C9372C"
+plt.rcParams.update({"font.size": 10, "text.color": TEXT, "axes.labelcolor": MUTED})
 
 AUTH = (EMAIL, TOKEN)
 e = html.escape
@@ -145,26 +154,100 @@ def table(headers, rows, numeric_cols=()):
     return f'<table data-layout="full-width"><tbody>{head}{body}</tbody></table>'
 
 
-def chart(title, ctype, categories, series, colours, width=900, height=420,
-          stacked=False, orientation=None, x_label="", y_label=""):
-    """series = [(series_name, [values...]), ...] aligned to categories."""
-    params = {"type": ctype, "title": title, "width": width, "height": height,
-              "legend": "true", "dataOrientation": "horizontal", "colors": colours,
-              "showShapes": "false"}
-    if stacked:
-        params["stacked"] = "true"
-    if orientation:
-        params["orientation"] = orientation
-    if x_label:
-        params["xLabel"] = x_label
-    if y_label:
-        params["yLabel"] = y_label
-    head = "<tr><th><p></p></th>" + "".join(f"<th><p>{e(c)}</p></th>" for c in categories) + "</tr>"
-    body = "".join(
-        f"<tr><th><p>{e(name)}</p></th>" + "".join(f"<td><p>{v}</p></td>" for v in vals) + "</tr>"
-        for name, vals in series
-    )
-    return macro("chart", params, f"<table><tbody>{head}{body}</tbody></table>")
+def img(filename, width):
+    return (f'<ac:image ac:align="center" ac:layout="center" ac:width="{width}">'
+            f'<ri:attachment ri:filename="{filename}"/></ac:image>')
+
+
+# ---------- Charts (PNG) ----------
+def _style(ax):
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color(GRID)
+    ax.tick_params(colors=TEXT, length=0)
+    ax.xaxis.grid(True, color=GRID, linewidth=0.8)
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_axisbelow(True)
+
+
+def _save(fig, name):
+    fig.savefig(name, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return name
+
+
+def chart_divisions(counts):
+    divs = sorted(DIVISIONS, key=lambda d: sum(counts[d].values()))  # largest at top
+    fig, ax = plt.subplots(figsize=(10, 4.6))
+    ypos = list(range(len(divs)))
+    left = [0] * len(divs)
+    for t, colour in zip(TYPES, TYPE_COLOURS):
+        vals = [counts[d][t] for d in divs]
+        ax.barh(ypos, vals, left=left, color=colour, label=t, height=0.64,
+                edgecolor="white", linewidth=1.2)
+        label_colour = TEXT if t == "Portfolio" else "white"
+        for i, (v, l) in enumerate(zip(vals, left)):
+            if v >= 2:
+                ax.text(l + v / 2, i, str(v), ha="center", va="center",
+                        color=label_colour, fontsize=9, fontweight="bold")
+        left = [a + b for a, b in zip(left, vals)]
+    for i, tot in enumerate(left):
+        ax.text(tot + max(left) * 0.012 + 0.2, i, str(tot), va="center",
+                fontsize=10, fontweight="bold")
+    _style(ax)
+    ax.set_yticks(ypos, divs)
+    ax.set_xlim(0, max(left + [1]) * 1.08)
+    ax.set_xlabel("Spaces")
+    ax.legend(ncol=4, loc="lower center", bbox_to_anchor=(0.5, 1.0), frameon=False)
+    return _save(fig, "jsr_divisions.png")
+
+
+def chart_donut(labels, values, colours, centre_label, filename):
+    items = [(l, v, c) for l, v, c in zip(labels, values, colours) if v > 0]
+    total = sum(v for _, v, _ in items)
+    fig, ax = plt.subplots(figsize=(5.4, 5.6))
+    if total:
+        wedges, _ = ax.pie([v for _, v, _ in items], colors=[c for *_, c in items],
+                           startangle=90, counterclock=False,
+                           wedgeprops=dict(width=0.36, edgecolor="white", linewidth=2))
+        ax.legend(wedges, [f"{l}   {v}  ({v / total:.0%})" for l, v, _ in items],
+                  loc="upper center", bbox_to_anchor=(0.5, 0.02), frameon=False,
+                  ncol=2, fontsize=9, handlelength=1, columnspacing=1.5)
+    ax.text(0, 0.08, str(total), ha="center", va="center", fontsize=28, fontweight="bold")
+    ax.text(0, -0.2, centre_label, ha="center", va="center", fontsize=10, color=MUTED)
+    ax.set_aspect("equal")
+    return _save(fig, filename)
+
+
+def chart_leads(top):
+    top = list(reversed(top))
+    vals = [len(l["keys"]) for l in top]
+    fig, ax = plt.subplots(figsize=(10, max(3, 0.36 * len(top) + 1)))
+    ypos = list(range(len(top)))
+    ax.barh(ypos, vals, height=0.62,
+            color=[ACTIVE_BLUE if l["active"] else INACTIVE_RED for l in top])
+    ax.set_yticks(ypos, [l["name"] for l in top])
+    for i, v in enumerate(vals):
+        ax.text(v + 0.06, i, str(v), va="center", fontsize=9, fontweight="bold")
+    _style(ax)
+    ax.set_xlim(0, max(vals + [1]) * 1.1)
+    ax.set_xlabel("Spaces led")
+    ax.legend(handles=[Patch(color=ACTIVE_BLUE, label="Active"),
+                       Patch(color=INACTIVE_RED, label="Inactive")],
+              ncol=2, loc="lower center", bbox_to_anchor=(0.5, 1.0), frameon=False)
+    return _save(fig, "jsr_leads.png")
+
+
+def upload_attachment(path):
+    """Create or replace an attachment on the report page."""
+    url = f"{SITE}/wiki/rest/api/content/{PAGE_ID}/child/attachment"
+    with open(path, "rb") as f:
+        r = requests.put(url, auth=AUTH, headers={"X-Atlassian-Token": "no-check"},
+                         files={"file": (os.path.basename(path), f, "image/png")},
+                         data={"minorEdit": "true"}, timeout=60)
+    if not r.ok:
+        print("Attachment upload failed:", r.status_code, r.text[:300])
+    r.raise_for_status()
 
 
 # ---------- Page ----------
@@ -192,19 +275,17 @@ def build_page(counts, spaces, attention):
         kpi("Leads to review", len(leads_to_review), "Inactive or missing space lead", "#FFF7D6"),
     )
 
-    # Division chart (stacked by type)
-    division_chart = chart(
-        "Spaces by division and space type", "bar", DIVISIONS,
-        [(t, [counts[d][t] for d in DIVISIONS]) for t in TYPES],
-        TYPE_COLOURS, width=1000, height=460, stacked=True,
-        orientation="horizontal", y_label="Spaces",
-    )
-
-    # Type pie + division pie side by side
-    type_pie = chart("Space types across REST", "pie", TYPES,
-                     [("Spaces", type_totals)], TYPE_COLOURS, width=480, height=380)
-    div_pie = chart("Share of spaces by division", "pie", DIVISIONS,
-                    [("Spaces", div_totals)], DIVISION_COLOURS, width=480, height=380)
+    # Charts (PNG files, uploaded as page attachments)
+    top = [l for l in leads if l["active"] is not None][:TOP_LEADS]
+    charts = {
+        "divisions": chart_divisions(counts),
+        "types": chart_donut(TYPES, type_totals, TYPE_COLOURS, "spaces", "jsr_types.png"),
+        "share": chart_donut(DIVISIONS, div_totals, DIVISION_COLOURS, "spaces", "jsr_share.png"),
+        "leads": chart_leads(top),
+    }
+    division_chart = img(charts["divisions"], 960)
+    type_pie = img(charts["types"], 440)
+    div_pie = img(charts["share"], 440)
 
     # Division summary table
     rows = []
@@ -215,11 +296,7 @@ def build_page(counts, spaces, attention):
     div_table = table(["Division"] + TYPES + ["Total"], rows, numeric_cols=range(1, 6))
 
     # Space leads
-    top = [l for l in leads if l["active"] is not None][:TOP_LEADS]
-    lead_chart = chart(f"Spaces per lead (top {len(top)})", "bar",
-                       [l["name"] for l in top], [("Spaces", [len(l["keys"]) for l in top])],
-                       "#0C66E4", width=1000, height=max(300, 32 * len(top)),
-                       orientation="horizontal")
+    lead_chart = img(charts["leads"], 960)
 
     def lead_status(l):
         if l["active"] is None:
@@ -243,7 +320,7 @@ def build_page(counts, spaces, attention):
     else:
         att = macro("tip", None, "<p>All company-managed spaces are categorised.</p>")
 
-    return (
+    body = (
         "<ac:layout>"
         + section("single", intro)
         + kpis
@@ -251,12 +328,13 @@ def build_page(counts, spaces, attention):
         + section("two_equal", "<h2>Space types</h2>" + type_pie,
                   "<h2>Division share</h2>" + div_pie)
         + section("single", "<h2>Division summary</h2>" + div_table)
-        + section("single", "<h2>Space leads</h2>"
-                  "<p>Every space lead, how many spaces they own and their account status. "
-                  "Inactive leads should be replaced.</p>" + lead_chart + lead_table)
+        + section("single", f"<h2>Space leads</h2>"
+                  f"<p>Top {len(top)} leads by number of spaces, then every lead with their account status. "
+                  f"Inactive leads should be replaced.</p>" + lead_chart + lead_table)
         + section("single", "<h2>Needs attention</h2>" + att)
         + "</ac:layout>"
     )
+    return body, list(charts.values())
 
 
 def update_page(body):
@@ -291,11 +369,13 @@ if __name__ == "__main__":
     projects = get_projects()
     print(f"Jira returned {len(projects)} projects")
     counts, spaces, attention = classify(projects)
-    body = build_page(counts, spaces, attention)
+    body, chart_files = build_page(counts, spaces, attention)
     if DRY_RUN:
         with open("preview.html", "w", encoding="utf-8") as f:
             f.write(body)
-        print(f"DRY RUN: {len(projects)} projects read, {len(spaces)} in scope, preview.html written")
+        print(f"DRY RUN: {len(projects)} projects read, {len(spaces)} in scope, preview.html and chart PNGs written")
     else:
+        for path in chart_files:
+            upload_attachment(path)
         update_page(body)
         print(f"Updated page {PAGE_ID}: {len(spaces)} spaces in scope, {len(attention)} need attention")
