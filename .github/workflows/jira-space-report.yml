@@ -1,0 +1,21 @@
+name: Jira Space Report
+
+on:
+  schedule:
+    - cron: "0 20 * * 0"   # Monday ~6am Sydney (7am during daylight saving)
+  workflow_dispatch:        # manual "Run workflow" button
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - run: python jira_space_report.py
+        env:
+          ATLASSIAN_EMAIL: ${{ secrets.ATLASSIAN_EMAIL }}
+          ATLASSIAN_API_TOKEN: ${{ secrets.ATLASSIAN_API_TOKEN }}
+          CONFLUENCE_PARENT_PAGE_ID: ${{ secrets.CONFLUENCE_PARENT_PAGE_ID }}
