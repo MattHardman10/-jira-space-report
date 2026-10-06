@@ -110,32 +110,109 @@ def _quiet_get(path, params=None):
     return r.json()
 
 
-def field_availability(space_keys, needed):
-    """Checks each space's create screens for the in-scope issue types."""
-    out = {}
-    for key in sorted(space_keys):
+_cache = {}
+
+
+def _cached(path, params=None):
+    k = (path, tuple(sorted((params or {}).items())))
+    if k not in _cache:
+        _cache[k] = _quiet_get(path, params)
+    return _cache[k]
+
+
+def _paged(path, params):
+    out, start = [], 0
+    while True:
+        d = _cached(path, {**params, "startAt": start, "maxResults": 50})
+        v = d.get("values", [])
+        out += v
+        if d.get("isLast", True) or not v:
+            return out
+        start += len(v)
+
+
+def _screen_fields(screen_id):
+    key = ("screen-fields", screen_id)
+    if key not in _cache:
+        ids = set()
+        for tab in _cached(f"/rest/api/3/screens/{screen_id}/tabs"):
+            for f in _cached(f"/rest/api/3/screens/{screen_id}/tabs/{tab['id']}/fields"):
+                ids.add(f["id"])
+        _cache[key] = ids
+    return _cache[key]
+
+
+def _fields_via_admin(project_id, type_ids):
+    """Admin route: space -> issue type screen scheme -> screen scheme -> edit screen -> fields.
+    Needs Jira admin rights only, not create permission in the space."""
+    itss = _paged("/rest/api/3/issuetypescreenscheme/project", {"projectId": project_id})
+    if not itss:
+        return None
+    itss_id = itss[0]["issueTypeScreenScheme"]["id"]
+    mapping = {m["issueTypeId"]: m["screenSchemeId"] for m in
+               _paged("/rest/api/3/issuetypescreenscheme/mapping", {"issueTypeScreenSchemeId": itss_id})}
+    found = set()
+    for tid in type_ids:
+        ss_id = mapping.get(tid, mapping.get("default"))
+        if not ss_id:
+            continue
+        ss = _paged("/rest/api/3/screenscheme", {"id": ss_id})
+        if not ss:
+            continue
+        screens = ss[0].get("screens", {})
+        screen_id = screens.get("edit") or screens.get("default")
+        if screen_id:
+            found |= _screen_fields(screen_id)
+    return found
+
+
+def _fields_via_createmeta(key):
+    """Fallback route: the space's create screen (needs create permission in the space)."""
+    d = _quiet_get(f"/rest/api/3/issue/createmeta/{key}/issuetypes", {"maxResults": 100})
+    types = [t for t in d.get("issueTypes", d.get("values", d.get("results", [])))
+             if t.get("name") in ISSUE_TYPES]
+    if not types:
+        return None
+    found = set()
+    for t in types:
+        start = 0
+        while True:
+            d = _quiet_get(f"/rest/api/3/issue/createmeta/{key}/issuetypes/{t['id']}",
+                           {"startAt": start, "maxResults": 200})
+            fl = d.get("fields", d.get("values", d.get("results", [])))
+            found |= {f.get("fieldId") or f.get("key") for f in fl}
+            start += len(fl)
+            if not fl or start >= d.get("total", 0):
+                break
+    return found
+
+
+def field_availability(space_info, needed):
+    """space_info = {space_key: (project_id, [issue type ids])}.
+    Returns {space_key: available | partial | missing | unknown}."""
+    out, method = {}, Counter()
+    for key, (project_id, type_ids) in sorted(space_info.items()):
+        found = None
         try:
-            d = _quiet_get(f"/rest/api/3/issue/createmeta/{key}/issuetypes", {"maxResults": 100})
-            types = [t for t in d.get("issueTypes", d.get("values", d.get("results", [])))
-                     if t.get("name") in ISSUE_TYPES]
-            if not types:
-                out[key] = "unknown"
-                continue
-            found = set()
-            for t in types:
-                start = 0
-                while True:
-                    d = _quiet_get(f"/rest/api/3/issue/createmeta/{key}/issuetypes/{t['id']}",
-                                   {"startAt": start, "maxResults": 200})
-                    fl = d.get("fields", d.get("values", d.get("results", [])))
-                    found |= {f.get("fieldId") or f.get("key") for f in fl}
-                    start += len(fl)
-                    if not fl or start >= d.get("total", 0):
-                        break
-            hits = needed & found
-            out[key] = "available" if hits == needed else ("partial" if hits else "missing")
+            found = _fields_via_admin(project_id, type_ids)
+            if found is not None:
+                method["screen scheme"] += 1
         except requests.HTTPError:
+            found = None
+        if found is None:
+            try:
+                found = _fields_via_createmeta(key)
+                if found is not None:
+                    method["create screen"] += 1
+            except requests.HTTPError:
+                found = None
+        if found is None:
             out[key] = "unknown"
+            method["not checked"] += 1
+            continue
+        hits = needed & found
+        out[key] = "available" if hits == needed else ("partial" if hits else "missing")
+    print("Field check method:", dict(method))
     return out
 
 
@@ -470,9 +547,9 @@ def build_page(rows, avail, bb_options, kmo_options, mos_options, history, now):
                    "Run work is excluded from alignment.</p>"
                    "<p><strong>Fully aligned</strong> = at least one Big Bet and at least one KMO. "
                    "<strong>Big Bet only / KMO only</strong> = one of the two. <strong>Not aligned</strong> = neither.</p>"
-                   "<p><strong>Fields on screen</strong> is checked from each space's create screen for these work types. "
+                   "<p><strong>Fields on screen</strong> is checked from each space's screen configuration (the edit screen for these work types). "
                    "<em>Not on screen</em> means the space needs a configuration change before teams can use the fields; "
-                   "<em>not checked</em> means the report account couldn't read that space's create screen.</p>"
+                   "<em>not checked</em> means the space's screen configuration couldn't be read.</p>"
                    "<p>Division comes from each space's Division | Type category; unmapped spaces appear as Uncategorised.</p>")
 
     kpi_cov = section("three_equal",
@@ -531,8 +608,8 @@ def build_page(rows, avail, bb_options, kmo_options, mos_options, history, now):
                    f"spaces' screens: {key_list(sp_missing)}</p>"
                    f"<p><strong>Fields available but not used ({len(sp_unused)})</strong> - education needed: "
                    f"{key_list(sp_unused)}</p>"
-                   + (f"<p><strong>Not checked ({len(sp_unknown)})</strong> - report account can't read the "
-                      f"create screen: {key_list(sp_unknown)}</p>" if sp_unknown else ""))
+                   + (f"<p><strong>Not checked ({len(sp_unknown)})</strong> - screen configuration couldn't be read: "
+                      f"{key_list(sp_unknown)}</p>" if sp_unknown else ""))
 
     # Items to fix - summary per division and space, full list as CSV
     to_fix = [r for r in rows if missing_for(r)]
@@ -608,7 +685,13 @@ if __name__ == "__main__":
     f_bb, f_kmo, f_tow = (find_field(fields, n) for n in (FIELD_BIG_BETS, FIELD_KMOS, FIELD_TYPE_OF_WORK))
     f_mos = find_field(fields, FIELD_MOS, required=False)
 
-    existing = {t["name"] for t in api("GET", "/rest/api/3/issuetype").json()}
+    all_types = api("GET", "/rest/api/3/issuetype").json()
+    existing = {t["name"] for t in all_types}
+    type_ids = defaultdict(list)                      # company-managed (unscoped) issue types
+    for t in all_types:
+        if not t.get("scope"):
+            type_ids[t["name"]].append(t["id"])
+    project_ids = {p["key"]: p["id"] for p in projects}
     types = [t for t in ISSUE_TYPES if t in existing]
     if set(ISSUE_TYPES) - set(types):
         print(f"Warning: issue types not found and skipped: {set(ISSUE_TYPES) - set(types)}")
@@ -619,7 +702,12 @@ if __name__ == "__main__":
     rows = analyse(issues, f_bb, f_kmo, f_tow, spaces, f_mos)
     print(f"{len(issues)} active items found, {len(rows)} in company-managed spaces")
 
-    avail = field_availability({r["space"] for r in rows}, {f_bb, f_kmo, f_tow})
+    used_types = defaultdict(set)
+    for r in rows:
+        used_types[r["space"]].add(r["itype"])
+    space_info = {k: (project_ids[k], [i for n in names for i in type_ids.get(n, [])])
+                  for k, names in used_types.items()}
+    avail = field_availability(space_info, {f_bb, f_kmo, f_tow})
     print("Field availability:", dict(Counter(avail.values())))
 
     bb_options, kmo_options = field_options(f_bb), field_options(f_kmo)
