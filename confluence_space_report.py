@@ -387,7 +387,25 @@ def update_page(body):
     })
 
 
-def main():
+def set_full_width():
+    """Set the page to full width (content-appearance properties). Never fails the run."""
+    for key in ("content-appearance-published", "content-appearance-draft"):
+        try:
+            base = f"/wiki/api/v2/pages/{PAGE_ID}/properties"
+            found = api("GET", base, params={"key": key}).json().get("results", [])
+            if found:
+                prop = found[0]
+                if prop.get("value") != "full-width":
+                    api("PUT", f"{base}/{prop['id']}", json={
+                        "key": key, "value": "full-width",
+                        "version": {"number": prop["version"]["number"] + 1}})
+            else:
+                api("POST", base, json={"key": key, "value": "full-width"})
+        except requests.HTTPError:
+            print(f"Could not set {key} - set full width manually if the page looks narrow")
+
+ def main():
+  
     if not (EMAIL and TOKEN):
         raise SystemExit("Missing ATLASSIAN_EMAIL or ATLASSIAN_API_TOKEN")
     if not DRY_RUN and not PAGE_ID.isdigit():
@@ -407,6 +425,7 @@ def main():
     for path in files:
         upload_attachment(path)
     update_page(body)
+    set_full_width()
     print(f"DONE. Page updated: {SITE}/wiki/pages/viewpage.action?pageId={PAGE_ID}")
 
 
