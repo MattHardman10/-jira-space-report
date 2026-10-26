@@ -103,7 +103,7 @@ def get_users(account_ids):
         try:
             vals = api("GET", "/rest/api/3/user/bulk",
                        params=[("accountId", a) for a in chunk] + [("maxResults", 100)]).json().get("values", [])
-            for u in vals:
+            for u in Filter(none, vals):
                 users[u["accountId"]] = {"name": u.get("displayName", "Unknown"), "active": u.get("active", True)}
         except requests.HTTPError:
             pass
@@ -296,8 +296,8 @@ def build_page(spaces, team, users):
     stamp = NOW.astimezone(SYDNEY).strftime("%A %d %B %Y, %I:%M %p")
     kpis = [("Current spaces", len(team), BLUE), ("New (last 90 days)", len(new90), GREEN),
             ("Updated in last 30 days", updated30, GREEN), ("Not updated 12m+ or empty", len(stale), RED),
-            ("Owner inactive or missing", len(inactive_owner) + len(no_owner), RED),
-            ("Archived spaces", len(archived), GREY), ("Personal spaces", len(personal), GREY)]
+            ("Owner inactive or missing", len(inactive_owner) + len(no_owner), RED)]
+            
     kpi_cells = "".join(
         f'<td style="text-align:center"><p style="text-align:center"><span style="color:{c}"><strong>'
         f'<span style="font-size:24px">{v}</span></strong></span></p>'
