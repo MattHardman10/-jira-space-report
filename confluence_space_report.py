@@ -103,7 +103,7 @@ def get_users(account_ids):
         try:
             vals = api("GET", "/rest/api/3/user/bulk",
                        params=[("accountId", a) for a in chunk] + [("maxResults", 100)]).json().get("values", [])
-            for u in filter(none, vals):
+            for u in [x for x in vals if x]:
                 users[u["accountId"]] = {"name": u.get("displayName", "Unknown"), "active": u.get("active", True)}
         except requests.HTTPError:
             pass
