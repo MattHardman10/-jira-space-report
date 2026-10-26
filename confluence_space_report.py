@@ -404,7 +404,7 @@ def set_full_width():
         except requests.HTTPError:
             print(f"Could not set {key} - set full width manually if the page looks narrow")
 
- def main():
+def main():
   
     if not (EMAIL and TOKEN):
         raise SystemExit("Missing ATLASSIAN_EMAIL or ATLASSIAN_API_TOKEN")
