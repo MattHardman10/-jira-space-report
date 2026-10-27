@@ -35,7 +35,7 @@ TOP_LEADS = 15                        # leads shown in bar charts
 CHILD_TITLE = "{division} – Jira spaces"
 
 DIVISIONS = [
-    "Data, Tech & Delivery",
+    "TTE",
     "Enterprise Risk",
     "Finance & Investment Operations",
     "Investments",
